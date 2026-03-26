@@ -1,0 +1,74 @@
+# Flutter/Dart
+frontend/flutter_app/.dart_tool/
+frontend/flutter_app/.flutter-plugins
+frontend/flutter_app/.flutter-plugins-dependencies
+frontend/flutter_app/.packages
+frontend/flutter_app/build/
+frontend/flutter_app/.pub-cache/
+frontend/flutter_app/.pub/
+frontend/flutter_app/coverage/
+frontend/flutter_app/lib/generated_plugin_registrant.dart
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+*.pyc
+build/
+dist/
+
+# Virtual environments
+ml/ml/
+ml/venv/
+ml/env/
+ml/ENV/
+venv/
+env/
+ENV/
+.venv/
+
+# ML - Models and data (large files)
+ml/lda_model/
+ml/models/*.pkl
+ml/models/*.h5
+ml/models/*.pt
+ml/models/*.bin
+ml/data/raw/
+ml/data/processed/
+ml/notebooks/.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+backend/fastapi_server/.env
+
+# Logs
+*.log
+logs/
+
+# Docker volumes (local)
+postgres_data/
+
+# Secrets
+*.pem
+*.key
+secrets/
+
+# Qoder cache
+.qoder/

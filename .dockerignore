@@ -1,0 +1,33 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment variables
+.env
+
+# Database
+*.db
+*.sqlite3
+
+# Frontend
+frontend/
+
+# ML models (large files)
+ml/models/*.pkl
+ml/models/*.h5
+ml/models/*.pt
