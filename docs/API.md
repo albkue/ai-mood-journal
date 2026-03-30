@@ -280,27 +280,71 @@ GET /ml/insights
 ### Batch Analyze Entries
 
 ```http
-POST /ml/batch-analyze
+POST /ml/entries/analyze-all
 ```
 
 **Headers:** `Authorization: Bearer <token>`
 
-**Request Body:**
+**Response (200):**
 ```json
 {
-  "entry_ids": [1, 2, 3]
+  "message": "Analyzed 5 entries",
+  "analyzed_count": 5
 }
 ```
+
+---
+
+### Get Daily Insights (Daily LDA + Emotions)
+
+```http
+GET /ml/daily-insights
+```
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Workflow:**
+1. Groups entries by day
+2. Predicts emotions for each entry
+3. Concatenates daily texts
+4. Runs LDA on daily corpora
+5. Returns combined daily emotions + topics
 
 **Response (200):**
 ```json
 {
-  "processed": 3,
-  "results": [
-    {"entry_id": 1, "emotion": "joy", "mood_score": 0.85},
-    {"entry_id": 2, "emotion": "sadness", "mood_score": 0.25},
-    {"entry_id": 3, "emotion": "neutral", "mood_score": 0.50}
-  ]
+  "daily_insights": [
+    {
+      "date": "2026-03-26",
+      "entries_count": 3,
+      "average_mood": 0.72,
+      "emotions": {
+        "joy": 2,
+        "neutral": 1
+      },
+      "entry_details": [
+        {
+          "entry_id": 1,
+          "title": "Morning",
+          "emotion": "joy",
+          "mood_score": 0.85,
+          "dominant_topic": "topic_7_time"
+        }
+      ],
+      "daily_topics": {
+        "topic_7_time": 0.15,
+        "topic_2_like": 0.12,
+        "topic_0_good": 0.10
+      },
+      "dominant_daily_topic": {
+        "topic": "topic_7_time",
+        "score": 0.15
+      },
+      "daily_text_preview": "Today was great..."
+    }
+  ],
+  "total_days": 10,
+  "total_entries": 25
 }
 ```
 
