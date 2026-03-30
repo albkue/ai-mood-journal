@@ -32,6 +32,7 @@ class AuthService {
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
       await ApiService.saveToken(data['access_token']);
+      await ApiService.saveRefreshToken(data['refresh_token']);
       return data['access_token'];
     } else {
       throw Exception('Invalid credentials');
@@ -40,6 +41,7 @@ class AuthService {
 
   static Future<void> logout() async {
     await ApiService.clearToken();
+    await ApiService.clearRefreshToken();
   }
 
   static Future<bool> isLoggedIn() async {

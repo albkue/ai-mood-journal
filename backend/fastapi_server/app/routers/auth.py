@@ -34,3 +34,22 @@ async def login(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
         )
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/refresh", response_model=schemas.Token)
+async def refresh_token(
+    refresh_data: RefreshRequest,
+    db: Session = Depends(get_db)
+):
+    """Get new access token using refresh token"""
+    try:
+        return auth_service.refresh_access_token(db, refresh_data.refresh_token)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+        )
