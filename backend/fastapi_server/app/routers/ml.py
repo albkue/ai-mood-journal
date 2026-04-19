@@ -1,5 +1,5 @@
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -8,16 +8,18 @@ from app.database import get_db
 from app.auth import get_current_active_user
 from app.repositories import JournalRepository
 
-# Import ML services (adjust path as needed)
+# Import ML services
 import sys
-sys.path.append('/app/../ml')
-from ml.services.emotion_predictor import get_predictor
-from ml.services.insights_service import get_insights_service
+import os
+# Add ML root directory to Python path
+_ml_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'ml'))
+if _ml_root not in sys.path:
+    sys.path.insert(0, _ml_root)
+from services.insights_service import get_insights_service
 
 router = APIRouter(prefix="/ml", tags=["machine_learning"])
 
 # Initialize services
-predictor = get_predictor()
 insights_service = get_insights_service()
 journal_repo = JournalRepository()
 
@@ -34,12 +36,32 @@ class AnalyzeResponse(BaseModel):
     topic_confidence: float
 
 
+def _entries_to_dicts(entries) -> List[dict]:
+    """Convert SQLAlchemy entries to dicts for insights service."""
+    return [
+        {
+            "id": e.id,
+            "content": e.content,
+            "mood_score": e.mood_score,
+            "mood_category": e.mood_category,
+            "sentiment_label": e.sentiment_label,
+            "dominant_topic": e.dominant_topic,
+            "emotion_distribution": e.emotion_distribution,
+            "topics_distribution": e.topics_distribution,
+            "created_at": e.created_at
+        }
+        for e in entries
+    ]
+
+
+# --- Per-entry analysis endpoints ---
+
 @router.post("/analyze", response_model=AnalyzeResponse)
 def analyze_text(
     request: AnalyzeRequest,
     current_user: models.User = Depends(get_current_active_user)
 ):
-    """Analyze text and return emotion and topic predictions"""
+    """Analyze text and return emotion and topic predictions (no DB save)"""
     result = insights_service.analyze_entry(request.text)
     return AnalyzeResponse(**result)
 
@@ -50,66 +72,35 @@ def analyze_entry(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_active_user)
 ):
-    """Analyze a specific journal entry and save results"""
+    """Manually trigger analysis for a specific entry"""
     entry = journal_repo.get_by_id_and_user(db, entry_id, current_user.id)
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
     
-    # Analyze the entry
     result = insights_service.analyze_entry(entry.content)
-    
-    # Update entry with analysis results
     entry = journal_repo.update_analysis(
-        db, entry, 
+        db, entry,
         mood_score=result['mood_score'],
-        sentiment_label=result['emotion']
+        sentiment_label=result['emotion'],
+        dominant_topic=result.get('dominant_topic'),
+        mood_category=result.get('mood_category'),
+        emotion_distribution=result.get('emotion_distribution'),
+        topics_distribution=result.get('topics_distribution')
     )
+    
+    # Invalidate cache
+    insights_service.invalidate_cache(current_user.id)
     
     return {
         "entry_id": entry.id,
         "emotion": result['emotion'],
         "mood_score": result['mood_score'],
-        "dominant_topic": result['dominant_topic']
+        "mood_category": result.get('mood_category'),
+        "dominant_topic": result.get('dominant_topic'),
+        "emotion_distribution": result.get('emotion_distribution'),
+        "topics_distribution": result.get('topics_distribution'),
+        "analysis_status": entry.analysis_status
     }
-
-
-@router.get("/insights", response_model=schemas.MoodInsight)
-def get_ml_insights(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user)
-):
-    """Get ML-powered mood insights"""
-    entries = journal_repo.get_analyzed_entries(db, current_user.id)
-    
-    # Convert to dict format for insights service
-    entries_data = [
-        {
-            "id": e.id,
-            "content": e.content,
-            "mood_score": e.mood_score,
-            "sentiment_label": e.sentiment_label,
-            "created_at": e.created_at
-        }
-        for e in entries
-    ]
-    
-    # Get trends
-    trends = insights_service.get_mood_trends(entries_data)
-    
-    # Get daily aggregation
-    daily = insights_service.aggregate_daily_emotions(entries_data)
-    
-    return schemas.MoodInsight(
-        total_entries=len(entries),
-        average_mood=trends['average_mood'],
-        mood_trend=daily['trend'],
-        entries=entries,
-        emotions_distribution=trends['emotions_distribution'],
-        topics_distribution=trends['topics_distribution'],
-        mood_volatility=trends['mood_volatility'],
-        best_day=trends['best_day'],
-        worst_day=trends['worst_day']
-    )
 
 
 @router.post("/entries/analyze-all")
@@ -117,25 +108,66 @@ def analyze_all_entries(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_active_user)
 ):
-    """Analyze all unanalyzed entries for the current user"""
+    """Analyze all pending/failed entries for the current user"""
     entries = db.query(models.JournalEntry).filter(
         models.JournalEntry.user_id == current_user.id,
-        models.JournalEntry.mood_score.is_(None)
+        models.JournalEntry.analysis_status.in_(["pending", "failed"])
     ).all()
     
     analyzed_count = 0
+    failed_count = 0
     for entry in entries:
-        result = insights_service.analyze_entry(entry.content)
-        journal_repo.update_analysis(
-            db, entry,
-            mood_score=result['mood_score'],
-            sentiment_label=result['emotion']
-        )
-        analyzed_count += 1
+        try:
+            result = insights_service.analyze_entry(entry.content)
+            journal_repo.update_analysis(
+                db, entry,
+                mood_score=result['mood_score'],
+                sentiment_label=result['emotion'],
+                dominant_topic=result.get('dominant_topic'),
+                mood_category=result.get('mood_category'),
+                emotion_distribution=result.get('emotion_distribution'),
+                topics_distribution=result.get('topics_distribution')
+            )
+            analyzed_count += 1
+        except Exception:
+            journal_repo.mark_analysis_failed(db, entry)
+            failed_count += 1
+    
+    # Invalidate cache
+    insights_service.invalidate_cache(current_user.id)
     
     return {
-        "message": f"Analyzed {analyzed_count} entries",
-        "analyzed_count": analyzed_count
+        "message": f"Analyzed {analyzed_count} entries, {failed_count} failed",
+        "analyzed_count": analyzed_count,
+        "failed_count": failed_count
+    }
+
+
+# --- Aggregated insights endpoints ---
+
+@router.get("/insights")
+def get_ml_insights(
+    days: int = Query(default=30, ge=1, le=365),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user)
+):
+    """Get ML-powered mood insights for a period (default: 30 days)"""
+    entries = journal_repo.get_analyzed_entries(db, current_user.id)
+    entries_data = _entries_to_dicts(entries)
+    
+    # Get trends from aggregator
+    trends = insights_service.get_mood_trends(entries_data, days)
+    
+    return {
+        "total_entries": len(entries),
+        "average_mood": trends['average_mood'],
+        "mood_trend": trends['mood_trend'],
+        "mood_volatility": trends['mood_volatility'],
+        "best_day": trends['best_day'],
+        "worst_day": trends['worst_day'],
+        "emotions_distribution": trends['emotions_distribution'],
+        "topics_distribution": trends['topics_distribution'],
+        "period_days": trends['period_days']
     }
 
 
@@ -144,87 +176,45 @@ def get_daily_insights(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_active_user)
 ):
-    """
-    Get daily insights with:
-    - Individual entry emotions
-    - Daily LDA topics (from concatenated daily texts)
-    - Combined visualization data
-    
-    Workflow:
-    1. Group entries by day
-    2. Predict emotions for each entry
-    3. Concatenate daily texts
-    4. Run LDA on daily corpora
-    5. Return combined daily emotions + topics
-    """
-    from collections import defaultdict
-    from datetime import datetime
-    
-    # Get all entries for user
+    """Get daily mood breakdown with emotions and topics per day"""
     entries = journal_repo.get_analyzed_entries(db, current_user.id)
-    if not entries:
-        return {"daily_insights": []}
+    entries_data = _entries_to_dicts(entries)
     
-    # Group entries by date
-    daily_entries = defaultdict(list)
-    for entry in entries:
-        date_key = entry.created_at.strftime('%Y-%m-%d') if isinstance(entry.created_at, datetime) else str(entry.created_at)[:10]
-        daily_entries[date_key].append(entry)
+    return insights_service.aggregate_daily_emotions(entries_data)
+
+
+@router.get("/streaks")
+def get_streaks(
+    good_threshold: float = Query(default=0.5, ge=0.0, le=1.0),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user)
+):
+    """Get mood streaks (consecutive good days)"""
+    entries = journal_repo.get_analyzed_entries(db, current_user.id)
+    entries_data = _entries_to_dicts(entries)
     
-    # Process each day
-    daily_insights = []
+    return insights_service.get_streaks(entries_data, good_threshold)
+
+
+@router.get("/time-of-day")
+def get_time_of_day(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user)
+):
+    """Get mood patterns by time of day (morning/afternoon/evening/night)"""
+    entries = journal_repo.get_analyzed_entries(db, current_user.id)
+    entries_data = _entries_to_dicts(entries)
     
-    for date in sorted(daily_entries.keys()):
-        day_entries = daily_entries[date]
-        
-        # Step 1: Individual entry emotions
-        entry_emotions = []
-        for entry in day_entries:
-            # Analyze if not already analyzed
-            if entry.mood_score is None:
-                result = insights_service.analyze_entry(entry.content)
-                entry.mood_score = result['mood_score']
-                entry.sentiment_label = result['emotion']
-                db.commit()
-            
-            entry_emotions.append({
-                "entry_id": entry.id,
-                "title": entry.title,
-                "emotion": entry.sentiment_label or "neutral",
-                "mood_score": entry.mood_score or 0.5,
-                "dominant_topic": entry.dominant_topic or "general"
-            })
-        
-        # Step 2: Calculate daily emotion aggregation
-        avg_mood = sum(e['mood_score'] for e in entry_emotions) / len(entry_emotions)
-        emotion_counts = defaultdict(int)
-        for e in entry_emotions:
-            emotion_counts[e['emotion']] += 1
-        
-        # Step 3: Concatenate daily texts
-        daily_text = " ".join([e.content for e in day_entries])
-        
-        # Step 4: Run LDA on daily corpus (single document)
-        daily_topics = insights_service.topic_modeler.extract_topics([daily_text])
-        dominant_daily_topic = max(daily_topics.items(), key=lambda x: x[1]) if daily_topics else ("general", 1.0)
-        
-        # Step 5: Compile daily insight
-        daily_insights.append({
-            "date": date,
-            "entries_count": len(day_entries),
-            "average_mood": round(avg_mood, 2),
-            "emotions": dict(emotion_counts),
-            "entry_details": entry_emotions,
-            "daily_topics": dict(list(daily_topics.items())[:5]),
-            "dominant_daily_topic": {
-                "topic": dominant_daily_topic[0],
-                "score": round(dominant_daily_topic[1], 4)
-            },
-            "daily_text_preview": daily_text[:200] + "..." if len(daily_text) > 200 else daily_text
-        })
+    return insights_service.get_time_of_day_effects(entries_data)
+
+
+@router.get("/weekly-patterns")
+def get_weekly_patterns(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user)
+):
+    """Get mood patterns by day of week (weekday vs weekend comparison)"""
+    entries = journal_repo.get_analyzed_entries(db, current_user.id)
+    entries_data = _entries_to_dicts(entries)
     
-    return {
-        "daily_insights": daily_insights,
-        "total_days": len(daily_insights),
-        "total_entries": len(entries)
-    }
+    return insights_service.get_weekly_patterns(entries_data)

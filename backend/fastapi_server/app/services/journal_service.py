@@ -9,8 +9,8 @@ class JournalService:
     def __init__(self):
         self.journal_repo = JournalRepository()
 
-    def create_entry(self, db: Session, user: User, content: str) -> schemas.JournalEntry:
-        entry = self.journal_repo.create_entry(db, user.id, content)
+    def create_entry(self, db: Session, user: User, title: str, content: str) -> schemas.JournalEntry:
+        entry = self.journal_repo.create_entry(db, user.id, title, content)
         return entry
 
     def get_entries(self, db: Session, user: User, skip: int = 0, limit: int = 100) -> List[schemas.JournalEntry]:
@@ -22,14 +22,19 @@ class JournalService:
             raise ValueError("Entry not found")
         return entry
 
-    def update_entry(self, db: Session, user: User, entry_id: int, content: str) -> schemas.JournalEntry:
+    def update_entry(self, db: Session, user: User, entry_id: int, content: str = None, title: str = None) -> schemas.JournalEntry:
         entry = self.journal_repo.get_by_id_and_user(db, entry_id, user.id)
         if not entry:
             raise ValueError("Entry not found")
         
-        # Update content and clear analysis (will be re-analyzed by ML)
-        entry.content = content
-        entry = self.journal_repo.clear_analysis(db, entry)
+        # Update fields
+        if content is not None:
+            entry.content = content
+            entry = self.journal_repo.clear_analysis(db, entry)  # Reset to pending
+        if title is not None:
+            entry.title = title
+            db.commit()
+            db.refresh(entry)
         return entry
 
     def delete_entry(self, db: Session, user: User, entry_id: int) -> bool:

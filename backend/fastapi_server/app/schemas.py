@@ -21,14 +21,16 @@ class User(UserBase):
 
 
 class JournalEntryBase(BaseModel):
+    title: Optional[str] = ""
     content: str
 
 
 class JournalEntryCreate(JournalEntryBase):
-    pass
+    mood_rating: Optional[int] = None
 
 
 class JournalEntryUpdate(BaseModel):
+    title: Optional[str] = None
     content: Optional[str] = None
 
 
@@ -36,7 +38,12 @@ class JournalEntry(JournalEntryBase):
     id: int
     user_id: int
     mood_score: Optional[float] = None
+    mood_category: Optional[str] = None
     sentiment_label: Optional[str] = None
+    dominant_topic: Optional[str] = None
+    emotion_distribution: Optional[Dict[str, float]] = None
+    topics_distribution: Optional[Dict[str, float]] = None
+    analysis_status: str = "pending"
     created_at: datetime
     updated_at: datetime
 
