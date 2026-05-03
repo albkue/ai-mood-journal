@@ -1,16 +1,35 @@
+"""
+Topic Modeler - Strategy Pattern implementation.
+
+Supports multiple topic extraction backends:
+- GensimLDATopicModeler: Traditional LDA (current, good for large corpora)
+- LLMTopicModeler: Gemini/OpenAI-powered extraction (best labels, needs API)
+- ZeroShotTopicModeler: Local zero-shot classification (privacy-friendly)
+
+All implement the same TopicModelerBase interface, so the rest of the
+system (EntryAnalyzer, InsightsAggregator) doesn't care which one is used.
+
+Configuration via environment variables:
+- TOPIC_MODELER_TYPE: "gensim" | "llm" | "zeroshot" (default: "gensim")
+- LLM_PROVIDER: "gemini" | "openai" (default: "gemini")
+- GEMINI_API_KEY / OPENAI_API_KEY: API keys for LLM provider
+"""
+from abc import ABC, abstractmethod
 from typing import List, Dict, Tuple, Optional
 from collections import Counter
 import re
 import pickle
 import os
 
-class TopicModeler:
-    """
-    Topic modeling using LDA (Latent Dirichlet Allocation).
-    Supports both Gensim and scikit-learn LDA models.
-    """
+
+# ============================================================
+# Abstract Base Class - The Interface
+# ============================================================
+
+class TopicModelerBase(ABC):
+    """Abstract base class for all topic modelers."""
     
-    # Common topics in mood journals (for fallback/initialization)
+    # Common topic keywords (shared across implementations for fallback)
     TOPIC_KEYWORDS = {
         "work": ["work", "job", "career", "boss", "colleague", "office", "meeting", "deadline", "project"],
         "family": ["family", "parent", "mother", "father", "sister", "brother", "child", "kid", "home"],
@@ -22,31 +41,98 @@ class TopicModeler:
         "education": ["school", "study", "class", "exam", "grade", "learn", "course", "homework"],
     }
     
-    # Model type constants
-    MODEL_GENSIM = "gensim"
-    MODEL_SKLEARN = "sklearn"
-    
-    def __init__(self, num_topics: int = 20, use_lda: bool = False, model_type: str = "gensim"):
-        self.num_topics = num_topics
-        self.use_lda = use_lda
-        self.model_type = model_type
-        self.model = None
-        self.vectorizer = None  # For sklearn
-        self.dictionary = None  # For Gensim
-        self.topic_names = []
+    @abstractmethod
+    def extract_topics(self, texts: List[str]) -> Dict[str, float]:
+        """
+        Extract topics from a collection of journal entries.
         
-        if use_lda:
-            if model_type == self.MODEL_GENSIM:
-                self._load_gensim_lda()
-            else:
-                self._load_or_train_sklearn_lda()
+        Returns:
+            Dictionary of {topic_name: relevance_score}
+        """
+        pass
     
-    def _load_gensim_lda(self):
-        """Load Gensim LDA model"""
+    @abstractmethod
+    def get_dominant_topic(self, text: str) -> Tuple[str, float]:
+        """
+        Get the dominant topic for a single entry.
+        
+        Returns:
+            Tuple of (topic_name, confidence_score)
+        """
+        pass
+    
+    def _preprocess(self, text: str) -> str:
+        """Common text preprocessing."""
+        text = text.lower()
+        text = re.sub(r'http\S+|www\S+', '', text)
+        text = re.sub(r'[^a-zA-Z\s]', '', text)
+        text = ' '.join(text.split())
+        return text
+    
+    def _extract_topics_keyword(self, texts: List[str], num_topics: int = 20) -> Dict[str, float]:
+        """Fallback keyword-based topic extraction (shared by all implementations)."""
+        combined_text = ' '.join(texts).lower()
+        
+        topic_scores = {}
+        for topic, keywords in self.TOPIC_KEYWORDS.items():
+            score = sum(combined_text.count(keyword) for keyword in keywords)
+            if score > 0:
+                topic_scores[topic] = score
+        
+        total = sum(topic_scores.values())
+        if total > 0:
+            topic_scores = {k: v / total for k, v in topic_scores.items()}
+        
+        return dict(sorted(topic_scores.items(), key=lambda x: x[1], reverse=True)[:num_topics])
+
+
+# ============================================================
+# Gensim LDA Topic Modeler (Current Implementation)
+# ============================================================
+
+class GensimLDATopicModeler(TopicModelerBase):
+    """
+    Topic modeling using Gensim LDA.
+    Good for large corpora, topics are stable over time.
+    Topics are word-lists (e.g., "topic_7_time") rather than human-readable.
+    """
+    
+    # Human-readable labels mapped from raw topic names
+    TOPIC_LABELS = {
+        "topic_0_good": "Positivity & Growth",
+        "topic_1_thank": "Gratitude",
+        "topic_2_like": "Preferences & Likes",
+        "topic_3_look": "Appearance & Opinion",
+        "topic_4_problem": "Problem Solving",
+        "topic_5_youre": "Relationships",
+        "topic_6_sorry": "Apology & Regret",
+        "topic_7_time": "Time & Persistence",
+        "topic_8_much": "Intentions & Play",
+        "topic_9_name": "Identity & Judgment",
+        "topic_10_well": "Work & Achievement",
+        "topic_11_day": "Daily Life & Friends",
+        "topic_12_dont": "Desires & Boundaries",
+        "topic_13_one": "Self Improvement",
+        "topic_14_people": "Social Thoughts",
+        "topic_15_long": "Media & Curiosity",
+        "topic_16_said": "Communication",
+        "topic_17_thanks": "Appreciation",
+        "topic_18_thats": "Agreement",
+        "topic_19_love": "Love & Affection",
+    }
+    
+    def __init__(self, num_topics: int = 20):
+        self.num_topics = num_topics
+        self.model = None
+        self.dictionary = None
+        self.topic_names = []
+        self._load_model()
+    
+    def _load_model(self):
+        """Load Gensim LDA model from disk."""
         try:
             from gensim import corpora, models
             
-            # Path to your Gensim model
             model_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "lda_model")
             model_path = os.path.join(model_dir, "lda_20topics.model")
             dict_path = os.path.join(model_dir, "dictionary.dict")
@@ -54,11 +140,8 @@ class TopicModeler:
             if os.path.exists(model_path) and os.path.exists(dict_path):
                 print(f"Loading Gensim LDA model from {model_dir}...")
                 
-                # Load model and dictionary
                 self.model = models.LdaModel.load(model_path)
                 self.dictionary = corpora.Dictionary.load(dict_path)
-                
-                # Get number of topics from model
                 self.num_topics = self.model.num_topics
                 
                 # Generate topic names from top words
@@ -71,280 +154,431 @@ class TopicModeler:
                         topic_label = f"topic_{topic_id}"
                     self.topic_names.append(topic_label)
                 
-                print(f"✓ Gensim LDA loaded: {self.num_topics} topics")
+                print(f"  Gensim LDA loaded: {self.num_topics} topics")
             else:
-                print(f"✗ Gensim LDA model not found at {model_dir}")
-                print("  Using keyword-based fallback...")
-                self.use_lda = False
+                print(f"  Gensim LDA model not found at {model_dir}, using keyword fallback")
+                self.model = None
                 
         except ImportError:
-            print("✗ Gensim not installed. Run: pip install gensim")
-            self.use_lda = False
-        except Exception as e:
-            print(f"✗ Error loading Gensim LDA: {e}")
-            self.use_lda = False
-    
-    def _load_or_train_sklearn_lda(self):
-        """Load existing sklearn LDA model or train a new one"""
-        model_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
-        model_path = os.path.join(model_dir, "lda_model.pkl")
-        vectorizer_path = os.path.join(model_dir, "lda_vectorizer.pkl")
-        
-        if os.path.exists(model_path) and os.path.exists(vectorizer_path):
-            with open(model_path, 'rb') as f:
-                self.model = pickle.load(f)
-            with open(vectorizer_path, 'rb') as f:
-                self.vectorizer = pickle.load(f)
-        else:
+            print("  Gensim not installed. Run: pip install gensim")
             self.model = None
-            self.vectorizer = None
-    
-    def _preprocess(self, text: str) -> str:
-        """Simple text preprocessing for LDA"""
-        # Lowercase
-        text = text.lower()
-        # Remove URLs
-        text = re.sub(r'http\S+|www\S+', '', text)
-        # Remove special characters but keep spaces
-        text = re.sub(r'[^a-zA-Z\s]', '', text)
-        # Remove extra whitespace
-        text = ' '.join(text.split())
-        return text
+        except Exception as e:
+            print(f"  Error loading Gensim LDA: {e}")
+            self.model = None
     
     def _tokenize(self, text: str) -> List[str]:
-        """Tokenize and preprocess text for Gensim"""
+        """Tokenize and preprocess text for Gensim."""
         processed = self._preprocess(text)
-        # Simple tokenization - split on whitespace
         tokens = processed.split()
-        # Remove short words
         tokens = [t for t in tokens if len(t) > 2]
         return tokens
     
     def extract_topics(self, texts: List[str]) -> Dict[str, float]:
-        """
-        Extract topics from a collection of journal entries.
-        
-        Returns:
-            Dictionary of {topic_name: relevance_score}
-        """
+        """Extract topics using Gensim LDA model."""
         if not texts:
             return {}
         
-        # Use Gensim LDA
-        if self.use_lda and self.model_type == self.MODEL_GENSIM and self.model is not None:
-            return self._extract_topics_gensim(texts)
+        if self.model is None or self.dictionary is None:
+            return self._extract_topics_keyword(texts, self.num_topics)
         
-        # Use sklearn LDA
-        if self.use_lda and self.model is not None and self.vectorizer is not None:
-            return self._extract_topics_sklearn(texts)
-        
-        # Fallback to keyword-based extraction
-        return self._extract_topics_keyword(texts)
-    
-    def _extract_topics_gensim(self, texts: List[str]) -> Dict[str, float]:
-        """Extract topics using Gensim LDA model"""
         try:
             from gensim import corpora
             
-            # Tokenize all texts
             tokenized = [self._tokenize(text) for text in texts]
-            
-            # Create bag of words corpus
             corpus = [self.dictionary.doc2bow(tokens) for tokens in tokenized]
             
-            # Get topic distributions for all documents
             all_topic_scores = {}
-            
             for doc_bow in corpus:
-                # Get topic distribution for this document
                 doc_topics = self.model.get_document_topics(doc_bow, minimum_probability=0.0)
-                
                 for topic_id, score in doc_topics:
                     topic_name = self.topic_names[topic_id] if topic_id < len(self.topic_names) else f"topic_{topic_id}"
-                    if topic_name not in all_topic_scores:
-                        all_topic_scores[topic_name] = 0.0
-                    all_topic_scores[topic_name] += score
+                    readable_name = self._get_readable_name(topic_name)
+                    if readable_name not in all_topic_scores:
+                        all_topic_scores[readable_name] = 0.0
+                    all_topic_scores[readable_name] += score
             
-            # Average across all documents
             num_docs = len(texts)
-            all_topic_scores = {k: v/num_docs for k, v in all_topic_scores.items()}
-            
-            # Sort by score and return top topics
-            sorted_topics = dict(sorted(all_topic_scores.items(), key=lambda x: x[1], reverse=True))
-            return sorted_topics
+            all_topic_scores = {k: v / num_docs for k, v in all_topic_scores.items()}
+            return dict(sorted(all_topic_scores.items(), key=lambda x: x[1], reverse=True))
             
         except Exception as e:
             print(f"Error in Gensim topic extraction: {e}")
-            return self._extract_topics_keyword(texts)
+            return self._extract_topics_keyword(texts, self.num_topics)
     
-    def _extract_topics_sklearn(self, texts: List[str]) -> Dict[str, float]:
-        """Extract topics using sklearn LDA model"""
-        processed_texts = [self._preprocess(text) for text in texts]
-        doc_term_matrix = self.vectorizer.transform(processed_texts)
-        topic_distribution = self.model.transform(doc_term_matrix)
-        
-        # Average topic distribution across all texts
-        avg_distribution = topic_distribution.mean(axis=0)
-        
-        # Create topic score dictionary
-        topic_scores = {}
-        for idx, score in enumerate(avg_distribution):
-            if idx < len(self.topic_names):
-                topic_scores[self.topic_names[idx]] = float(score)
-        
-        return dict(sorted(topic_scores.items(), key=lambda x: x[1], reverse=True))
-    
-    def _extract_topics_keyword(self, texts: List[str]) -> Dict[str, float]:
-        """Fallback keyword-based topic extraction"""
-        combined_text = ' '.join(texts).lower()
-        
-        topic_scores = {}
-        for topic, keywords in self.TOPIC_KEYWORDS.items():
-            score = sum(combined_text.count(keyword) for keyword in keywords)
-            if score > 0:
-                topic_scores[topic] = score
-        
-        # Normalize scores
-        total = sum(topic_scores.values())
-        if total > 0:
-            topic_scores = {k: v/total for k, v in topic_scores.items()}
-        
-        return dict(sorted(topic_scores.items(), key=lambda x: x[1], reverse=True)[:self.num_topics])
+    def _get_readable_name(self, raw_topic: str) -> str:
+        """Convert raw topic name to human-readable label."""
+        return self.TOPIC_LABELS.get(raw_topic, raw_topic.replace("topic_", "").replace("_", " ").title())
     
     def get_dominant_topic(self, text: str) -> Tuple[str, float]:
-        """Get the dominant topic for a single entry"""
-        if self.use_lda and self.model_type == self.MODEL_GENSIM and self.model is not None:
-            return self._get_dominant_topic_gensim(text)
+        """Get dominant topic using Gensim model for single text."""
+        if self.model is None or self.dictionary is None:
+            topics = self._extract_topics_keyword([text], self.num_topics)
+            if not topics:
+                return "general", 1.0
+            return list(topics.items())[0]
         
-        topics = self.extract_topics([text])
-        if not topics:
-            return "general", 1.0
-        return list(topics.items())[0]
-    
-    def _get_dominant_topic_gensim(self, text: str) -> Tuple[str, float]:
-        """Get dominant topic using Gensim model for single text"""
         try:
             tokens = self._tokenize(text)
             doc_bow = self.dictionary.doc2bow(tokens)
             doc_topics = self.model.get_document_topics(doc_bow)
             
             if doc_topics:
-                # Get topic with highest probability
                 dominant = max(doc_topics, key=lambda x: x[1])
                 topic_id, score = dominant
                 topic_name = self.topic_names[topic_id] if topic_id < len(self.topic_names) else f"topic_{topic_id}"
-                return topic_name, float(score)
-        except Exception as e:
+                return self._get_readable_name(topic_name), float(score)
+        except Exception:
             pass
         
         return "general", 1.0
     
     def get_topic_keywords(self, topic_name: str) -> List[str]:
-        """Get keywords for a specific topic"""
-        # Try to get from Gensim model
-        if self.model_type == self.MODEL_GENSIM and self.model is not None:
+        """Get keywords for a specific topic."""
+        if self.model is not None:
             try:
-                # Extract topic ID from name (topic_0_word -> 0)
                 parts = topic_name.split('_')
                 if len(parts) >= 2:
                     topic_id = int(parts[1])
                     top_words = self.model.show_topic(topic_id, topn=5)
                     return [word for word, _ in top_words]
-            except:
+            except Exception:
                 pass
-        
         return self.TOPIC_KEYWORDS.get(topic_name, [])
     
     def get_lda_topics_words(self, n_words: int = 5) -> Dict[str, List[str]]:
-        """
-        Get top words for each LDA topic.
-        
-        Returns:
-            Dictionary of {topic_name: [top_words]}
-        """
-        if not self.use_lda:
+        """Get top words for each LDA topic."""
+        if self.model is None:
             return {}
         
-        if self.model_type == self.MODEL_GENSIM and self.model is not None:
-            topics_words = {}
-            for topic_id in range(self.num_topics):
-                top_words = self.model.show_topic(topic_id, topn=n_words)
-                topic_name = self.topic_names[topic_id] if topic_id < len(self.topic_names) else f"topic_{topic_id}"
-                topics_words[topic_name] = [word for word, _ in top_words]
-            return topics_words
-        
-        # sklearn model
-        if self.model is not None and self.vectorizer is not None:
-            feature_names = self.vectorizer.get_feature_names_out()
-            topics_words = {}
-            
-            for topic_idx, topic in enumerate(self.model.components_):
-                top_indices = topic.argsort()[:-n_words-1:-1]
-                top_words = [feature_names[i] for i in top_indices]
-                topic_name = self.topic_names[topic_idx] if topic_idx < len(self.topic_names) else f"topic_{topic_idx}"
-                topics_words[topic_name] = top_words
-            
-            return topics_words
-        
-        return {}
+        topics_words = {}
+        for topic_id in range(self.num_topics):
+            top_words = self.model.show_topic(topic_id, topn=n_words)
+            topic_name = self.topic_names[topic_id] if topic_id < len(self.topic_names) else f"topic_{topic_id}"
+            topics_words[topic_name] = [word for word, _ in top_words]
+        return topics_words
+
+
+# ============================================================
+# LLM-based Topic Modeler (Gemini / OpenAI)
+# ============================================================
+
+class LLMTopicModeler(TopicModelerBase):
+    """
+    Topic extraction using LLM APIs (Gemini or OpenAI).
     
-    def train_sklearn_lda(self, texts: List[str]) -> bool:
-        """
-        Train sklearn LDA model on journal entries.
-        """
+    Pros:
+    - Human-readable topic labels ("work stress", "relationship worries")
+    - Works great on short text (even single entries)
+    - More coherent, distinct topics
+    
+    Cons:
+    - External API dependency (latency, cost, privacy)
+    - Rate limits apply
+    """
+    
+    # System prompt for topic extraction
+    SYSTEM_PROMPT = """You are a mental health journal analyzer. Given journal entries, identify 1-5 relevant topics.
+
+For each topic, provide:
+- A short, human-readable label (2-3 words, e.g., "work stress", "family bonding")
+- A confidence score (0.0 to 1.0)
+
+Respond in this exact JSON format only:
+{"topics": [{"label": "topic label", "confidence": 0.8}, ...]}
+
+Important: Only return the JSON, no other text. Topics should be relevant to mental health and daily life."""
+
+    def __init__(self, provider: str = "gemini", api_key: str = None):
+        self.provider = provider
+        self.api_key = api_key or self._get_api_key()
+    
+    def _get_api_key(self) -> str:
+        """Get API key from environment."""
+        if self.provider == "gemini":
+            return os.environ.get("GEMINI_API_KEY", "")
+        elif self.provider == "openai":
+            return os.environ.get("OPENAI_API_KEY", "")
+        return ""
+    
+    def extract_topics(self, texts: List[str]) -> Dict[str, float]:
+        """Extract topics using LLM."""
+        if not texts:
+            return {}
+        
+        if not self.api_key:
+            print("  LLM API key not configured, using keyword fallback")
+            return self._extract_topics_keyword(texts)
+        
         try:
-            from sklearn.feature_extraction.text import CountVectorizer
-            from sklearn.decomposition import LatentDirichletAllocation
+            combined_text = "\n---\n".join(texts[:5])  # Limit to 5 entries to control cost
+            response = self._call_llm(combined_text)
+            return self._parse_response(response)
+        except Exception as e:
+            print(f"  LLM topic extraction failed: {e}")
+            return self._extract_topics_keyword(texts)
+    
+    def get_dominant_topic(self, text: str) -> Tuple[str, float]:
+        """Get dominant topic using LLM."""
+        topics = self.extract_topics([text])
+        if not topics:
+            return "general", 1.0
+        return list(topics.items())[0]
+    
+    def _call_llm(self, text: str) -> str:
+        """Call LLM API based on provider."""
+        if self.provider == "gemini":
+            return self._call_gemini(text)
+        elif self.provider == "openai":
+            return self._call_openai(text)
+        else:
+            raise ValueError(f"Unknown LLM provider: {self.provider}")
+    
+    def _call_gemini(self, text: str) -> str:
+        """Call Google Gemini API."""
+        import requests
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={self.api_key}"
+        
+        payload = {
+            "contents": [{
+                "parts": [{
+                    "text": f"{self.SYSTEM_PROMPT}\n\nJournal entries:\n{text}"
+                }]
+            }],
+            "generationConfig": {
+                "temperature": 0.3,
+                "maxOutputTokens": 256
+            }
+        }
+        
+        response = requests.post(url, json=payload, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    
+    def _call_openai(self, text: str) -> str:
+        """Call OpenAI ChatGPT API."""
+        import requests
+        
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": self.SYSTEM_PROMPT},
+                {"role": "user", "content": f"Journal entries:\n{text}"}
+            ],
+            "temperature": 0.3,
+            "max_tokens": 256
+        }
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
+    
+    def _parse_response(self, response: str) -> Dict[str, float]:
+        """Parse LLM response into topic dict."""
+        import json
+        
+        try:
+            # Strip markdown code blocks if present
+            cleaned = response.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
             
-            if len(texts) < 10:
-                print("Not enough texts to train LDA (need at least 10)")
-                return False
+            data = json.loads(cleaned)
+            topics = data.get("topics", [])
             
-            processed_texts = [self._preprocess(text) for text in texts]
+            result = {}
+            for item in topics:
+                label = item.get("label", "").strip().lower()
+                confidence = float(item.get("confidence", 0.5))
+                if label:
+                    result[label] = confidence
             
-            self.vectorizer = CountVectorizer(
-                max_df=0.95,
-                min_df=2,
-                max_features=1000,
-                stop_words='english'
+            return dict(sorted(result.items(), key=lambda x: x[1], reverse=True))
+            
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            print(f"  Failed to parse LLM response: {e}")
+            print(f"  Raw response: {response[:200]}")
+            return {}
+
+
+# ============================================================
+# Zero-Shot Topic Modeler (Local, Privacy-Friendly)
+# ============================================================
+
+class ZeroShotTopicModeler(TopicModelerBase):
+    """
+    Topic extraction using zero-shot classification (facebook/bart-large-mnli).
+    
+    Pros:
+    - Runs locally (no data leaves server)
+    - Works on short text
+    - Human-readable labels from candidate list
+    - No API costs
+    
+    Cons:
+    - Limited to predefined candidate topics
+    - Requires ~1.5GB model download on first run
+    - Slower than keyword matching (but faster than API calls)
+    """
+    
+    # Candidate topics for mental health journaling
+    DEFAULT_CANDIDATES = [
+        "work stress", "family", "relationships", "health and fitness",
+        "social life", "hobbies and creativity", "finances",
+        "education and learning", "anxiety and worry", "gratitude and joy",
+        "sleep quality", "self-improvement", "loneliness", "accomplishments",
+        "nature and outdoors", "food and cooking", "travel", "spirituality"
+    ]
+    
+    def __init__(self, candidate_topics: List[str] = None, model_name: str = "facebook/bart-large-mnli"):
+        self.candidate_topics = candidate_topics or self.DEFAULT_CANDIDATES
+        self.model_name = model_name
+        self.classifier = None
+        self._load_model()
+    
+    def _load_model(self):
+        """Load zero-shot classification model."""
+        try:
+            from transformers import pipeline
+            print(f"Loading zero-shot classifier ({self.model_name})...")
+            self.classifier = pipeline(
+                "zero-shot-classification",
+                model=self.model_name,
+                device=-1  # CPU; use 0 for GPU
             )
-            doc_term_matrix = self.vectorizer.fit_transform(processed_texts)
+            print(f"  Zero-shot classifier loaded with {len(self.candidate_topics)} candidate topics")
+        except ImportError:
+            print("  transformers not installed. Run: pip install transformers torch")
+            self.classifier = None
+        except Exception as e:
+            print(f"  Error loading zero-shot model: {e}")
+            self.classifier = None
+    
+    def extract_topics(self, texts: List[str]) -> Dict[str, float]:
+        """Extract topics using zero-shot classification."""
+        if not texts:
+            return {}
+        
+        if self.classifier is None:
+            return self._extract_topics_keyword(texts)
+        
+        try:
+            combined_text = " ".join(texts)
+            # Truncate very long text to avoid OOM
+            if len(combined_text) > 2000:
+                combined_text = combined_text[:2000]
             
-            self.model = LatentDirichletAllocation(
-                n_components=self.num_topics,
-                random_state=42,
-                max_iter=10
+            result = self.classifier(
+                combined_text,
+                self.candidate_topics,
+                multi_label=True
             )
-            self.model.fit(doc_term_matrix)
             
-            feature_names = self.vectorizer.get_feature_names_out()
-            self.topic_names = []
-            for topic_idx, topic in enumerate(self.model.components_):
-                top_words = [feature_names[i] for i in topic.argsort()[:-6:-1]]
-                self.topic_names.append(f"topic_{topic_idx}_{top_words[0]}")
+            topic_scores = {}
+            for label, score in zip(result["labels"], result["scores"]):
+                if score > 0.05:  # Filter very low scores
+                    topic_scores[label] = round(score, 3)
             
-            model_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
-            os.makedirs(model_dir, exist_ok=True)
-            
-            with open(os.path.join(model_dir, "lda_model.pkl"), 'wb') as f:
-                pickle.dump(self.model, f)
-            with open(os.path.join(model_dir, "lda_vectorizer.pkl"), 'wb') as f:
-                pickle.dump(self.vectorizer, f)
-            
-            self.use_lda = True
-            self.model_type = self.MODEL_SKLEARN
-            return True
+            return dict(sorted(topic_scores.items(), key=lambda x: x[1], reverse=True))
             
         except Exception as e:
-            print(f"Error training LDA: {e}")
-            return False
+            print(f"  Zero-shot classification failed: {e}")
+            return self._extract_topics_keyword(texts)
+    
+    def get_dominant_topic(self, text: str) -> Tuple[str, float]:
+        """Get dominant topic using zero-shot classification."""
+        if self.classifier is None:
+            topics = self._extract_topics_keyword([text])
+            if not topics:
+                return "general", 1.0
+            return list(topics.items())[0]
+        
+        try:
+            result = self.classifier(
+                text[:2000],  # Truncate
+                self.candidate_topics,
+                multi_label=False
+            )
+            
+            if result["labels"]:
+                return result["labels"][0], round(result["scores"][0], 3)
+        except Exception:
+            pass
+        
+        return "general", 1.0
 
 
-# Singleton instance
+# ============================================================
+# Factory Function - Environment-Configured Selection
+# ============================================================
+
 _modeler = None
 
-def get_topic_modeler(num_topics: int = 20, use_lda: bool = False, model_type: str = "gensim") -> TopicModeler:
+def get_topic_modeler(
+    model_type: str = None,
+    num_topics: int = 20,
+    **kwargs
+) -> TopicModelerBase:
+    """
+    Factory function to get the appropriate topic modeler.
+    
+    Selects based on:
+    1. Explicit model_type parameter
+    2. TOPIC_MODELER_TYPE environment variable
+    3. Default: "gensim"
+    
+    Args:
+        model_type: "gensim" | "llm" | "zeroshot"
+        num_topics: Number of topics (only used by Gensim LDA)
+        **kwargs: Additional args passed to modeler constructor
+    
+    Returns:
+        TopicModelerBase implementation
+    """
     global _modeler
-    if _modeler is None:
-        _modeler = TopicModeler(num_topics, use_lda, model_type)
+    if _modeler is not None:
+        return _modeler
+    
+    # Determine model type
+    if model_type is None:
+        model_type = os.environ.get("TOPIC_MODELER_TYPE", "gensim").lower()
+    
+    print(f"Initializing TopicModeler (type={model_type})...")
+    
+    if model_type == "gensim":
+        _modeler = GensimLDATopicModeler(num_topics=num_topics)
+    
+    elif model_type == "llm":
+        provider = kwargs.get("provider") or os.environ.get("LLM_PROVIDER", "gemini").lower()
+        api_key = kwargs.get("api_key")
+        _modeler = LLMTopicModeler(provider=provider, api_key=api_key)
+    
+    elif model_type == "zeroshot":
+        candidates = kwargs.get("candidate_topics")
+        model_name = kwargs.get("model_name", "facebook/bart-large-mnli")
+        _modeler = ZeroShotTopicModeler(candidate_topics=candidates, model_name=model_name)
+    
+    else:
+        print(f"  Unknown model type '{model_type}', falling back to gensim")
+        _modeler = GensimLDATopicModeler(num_topics=num_topics)
+    
     return _modeler
+
+
+def reset_topic_modeler():
+    """Reset singleton (useful for testing or switching modelers)."""
+    global _modeler
+    _modeler = None
