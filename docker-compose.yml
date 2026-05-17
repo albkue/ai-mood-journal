@@ -19,7 +19,9 @@ services:
       retries: 5
 
   backend:
-    build: ./backend/fastapi_server
+    build: 
+      context: .
+      dockerfile: backend/fastapi_server/Dockerfile
     container_name: mood_journal_backend
     environment:
       DB_USER: postgres
@@ -28,6 +30,8 @@ services:
       DB_PORT: 5432
       DB_NAME: mood_journal
       SECRET_KEY: your-secret-key-change-this-in-production
+    env_file:
+      - ./ml/.env
     ports:
       - "8000:8000"
     depends_on:
@@ -35,6 +39,7 @@ services:
         condition: service_healthy
     volumes:
       - ./backend/fastapi_server:/app
+      - ./ml:/ml
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 volumes:

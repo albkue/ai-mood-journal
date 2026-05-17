@@ -33,6 +33,8 @@ ENV/
 
 # ML - Models and data (large files)
 ml/lda_model/
+ml/Bi-LSTM/*.h5
+ml/Bi-LSTM/*.pkl
 ml/models/*.pkl
 ml/models/*.h5
 ml/models/*.pt

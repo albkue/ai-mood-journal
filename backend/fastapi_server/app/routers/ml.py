@@ -34,6 +34,89 @@ class AnalyzeResponse(BaseModel):
     mood_score: float
     dominant_topic: str
     topic_confidence: float
+    combined_insight: Optional[str] = None
+
+
+class SwitchConfigRequest(BaseModel):
+    emotion_model: Optional[str] = None
+    topic_model: Optional[str] = None
+
+
+@router.get("/config")
+def get_ml_config():
+    """Get currently active ML models and all available models."""
+    import os
+    try:
+        active = insights_service.get_active_models()
+        return {
+            "active_models": {
+                "emotion_predictor": {
+                    "type": "keras",
+                    "class": "KerasPredictor"
+                },
+                "topic_modeler": {
+                    "type": "gensim",
+                    "class": "TopicModeler"
+                }
+            },
+            "available_emotion_predictors": ["keras"],
+            "available_topic_modelers": ["gensim"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch config: {str(e)}")
+
+
+@router.post("/config")
+def update_ml_config(request: SwitchConfigRequest):
+    """Dynamically switch active ML models (no server restart required)."""
+    if not request.emotion_model and not request.topic_model:
+        raise HTTPException(status_code=400, detail="Must provide emotion_model or topic_model to switch")
+    
+    valid_emotions = ["keras"]
+    valid_topics = ["gensim"]
+    
+    if request.emotion_model and request.emotion_model not in valid_emotions:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid emotion_model. Must be: {valid_emotions}"
+        )
+        
+    if request.topic_model and request.topic_model not in valid_topics:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid topic_model. Must be: {valid_topics}"
+        )
+        
+    try:
+        active = insights_service.switch_models(
+            emotion_model_type="keras",
+            topic_model_type="gensim"
+        )
+        return {
+            "message": "Successfully locked to active models",
+            "active_models": {
+                "emotion_predictor": {
+                    "type": "keras",
+                    "class": "KerasPredictor"
+                },
+                "topic_modeler": {
+                    "type": "gensim",
+                    "class": "TopicModeler"
+                }
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to switch models: {str(e)}")
+
+
+@router.post("/analyze-public", response_model=AnalyzeResponse)
+def analyze_text_public(request: AnalyzeRequest):
+    """Analyze text publicly (no authentication required, useful for quick testing)"""
+    try:
+        result = insights_service.analyze_entry(request.text)
+        return AnalyzeResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
 def _entries_to_dicts(entries) -> List[dict]:

@@ -53,6 +53,9 @@ class EntryAnalyzer:
         topics_dist = {k: float(v) for k, v in topics_dist.items()}
         topics_dist = dict(list(topics_dist.items())[:5])
         
+        # Make Bi-LSTM and LDA work together to generate a joint explanation
+        combined_insight = self._generate_combined_insight(emotion.value, str(topic))
+        
         return {
             "emotion": emotion.value,
             "confidence": round(float(confidence), 2),
@@ -61,7 +64,8 @@ class EntryAnalyzer:
             "dominant_topic": str(topic),
             "topic_confidence": round(float(topic_conf), 2),
             "emotion_distribution": emotion_dist,
-            "topics_distribution": topics_dist
+            "topics_distribution": topics_dist,
+            "combined_insight": combined_insight
         }
     
     def analyze_with_explanation(self, text: str, user_entries: list = None) -> Dict[str, Any]:
@@ -109,6 +113,19 @@ class EntryAnalyzer:
             return "low"
         else:
             return "rough"
+
+    def _generate_combined_insight(self, emotion: str, topic: str) -> str:
+        """Create a hybrid insight combining Bi-LSTM emotion and LDA topic."""
+        # Simple sentiment mapping
+        positive_emotions = ["joy", "love", "gratitude", "excitement", "pride", "relief", "admiration", "amusement", "approval", "caring", "optimism"]
+        negative_emotions = ["annoyance", "disappointment", "disapproval", "nervousness", "remorse", "anger", "disgust", "embarrassment", "fear", "grief", "sadness"]
+        
+        if emotion in positive_emotions:
+            return f"The Bi-LSTM model detected a positive sentiment of '{emotion}' which aligns beautifully with your thoughts on '{topic}' (analyzed by LDA)."
+        elif emotion in negative_emotions:
+            return f"The Bi-LSTM model detected some underlying '{emotion}' in your writing. This seems related to the topic of '{topic}' extracted by LDA."
+        else:
+            return f"The Bi-LSTM emotion predictor detected a '{emotion}' state, while the LDA topic modeler classified the theme as '{topic}'."
 
 
 # Singleton instance
