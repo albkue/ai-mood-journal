@@ -40,14 +40,14 @@ app.add_middleware(
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Simple in-memory rate limiter."""
     
-    def __init__(self, app, max_requests: int = 60, window_seconds: int = 60):
+    def __init__(self, app, max_requests: int = 10000, window_seconds: int = 60):
         super().__init__(app)
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self.requests = defaultdict(list)  # ip -> [timestamps]
     
-    # Stricter limits for auth endpoints
-        self.auth_limits = {"/api/v1/auth/login": 5, "/api/v1/auth/register": 3}
+    # High limits for development and testing
+        self.auth_limits = {"/api/v1/auth/login": 10000, "/api/v1/auth/register": 10000}
     
     async def dispatch(self, request: Request, call_next):
         client_ip = request.client.host if request.client else "unknown"
@@ -77,7 +77,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return response
 
 
-app.add_middleware(RateLimitMiddleware, max_requests=60, window_seconds=60)
+app.add_middleware(RateLimitMiddleware, max_requests=10000, window_seconds=60)
 
 
 # --- Input Sanitization Middleware ---

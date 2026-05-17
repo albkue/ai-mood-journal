@@ -64,6 +64,31 @@ class InsightsService:
         """Invalidate cached insights."""
         self.insights_aggregator.invalidate_cache(user_id)
 
+    def get_active_models(self) -> Dict[str, str]:
+        """Get the currently active models."""
+        return {
+            "emotion_predictor": self.entry_analyzer.predictor.__class__.__name__,
+            "topic_modeler": self.entry_analyzer.topic_modeler.__class__.__name__
+        }
+
+    def switch_models(self, emotion_model_type: str = None, topic_model_type: str = None) -> Dict[str, str]:
+        """Switch active models dynamically."""
+        import os
+        from services.emotion_predictor import get_predictor, reset_predictor
+        from services.topic_modeler import get_topic_modeler, reset_topic_modeler
+        
+        if emotion_model_type:
+            reset_predictor()
+            self.entry_analyzer.predictor = get_predictor(model_type=emotion_model_type)
+            os.environ["EMOTION_PREDICTOR_TYPE"] = emotion_model_type
+            
+        if topic_model_type:
+            reset_topic_modeler()
+            self.entry_analyzer.topic_modeler = get_topic_modeler(model_type=topic_model_type)
+            os.environ["TOPIC_MODELER_TYPE"] = topic_model_type
+            
+        return self.get_active_models()
+
 
 # Singleton instance
 _insights_service = None
