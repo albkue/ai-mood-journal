@@ -66,12 +66,53 @@ Both models are dynamically loaded upon backend startup inside the Docker enviro
     *   Loads pre-compiled LDA dictionary and serialization matrices using `gensim`.
     *   Runs tokenization and stopwords cleansing without requiring any internet connection.
 
----
-
 ## 🤝 2. How the Models Work Together (The Core Pipeline)
 
 The two models work in harmony inside the **`EntryAnalyzer`** class located in **`ml/services/entry_analyzer.py`**:
 
+### 🔄 The 6-Step Processing Pipeline
+When a user clicks **"Save Entry & Analyze"** in the Flutter app, the system executes this precise processing loop:
+
+```
+[ STEP 1 ] User Inputs Text (Flutter)
+     │
+     ▼
+[ STEP 2 ] REST API Call (FastAPI Backend)
+     │
+     ├──────────────────────────────────────────────┐
+     ▼                                              ▼
+[ STEP 3a ] Bi-LSTM Pipeline                   [ STEP 3b ] LDA Pipeline
+  - Tokenize & Pad Sequence                      - Text Cleaning (Stopwords removed)
+  - Feed to Deep Learning Neural Net             - Convert to Bag-of-Words Vector
+  - Output: Emotion (e.g. JOY)                   - Output: Theme (e.g. FAMILY)
+     │                                              │
+     └──────────────────────┬───────────────────────┘
+                            ▼
+                     [ STEP 4 ] Joint Explanation Generator
+                       - Combined Insight generated
+                            │
+                            ▼
+                     [ STEP 5 ] Save to Database (PostgreSQL)
+                            │
+                            ▼
+                     [ STEP 6 ] Render UI (Flutter Dashboard)
+```
+
+1.  **Step 1: User Input (Flutter):** The user writes a journal entry in Flutter and clicks "Save & Analyze".
+2.  **Step 2: API Route (FastAPI):** Flutter triggers an HTTP `POST` request to `/journal/entries` with the raw text.
+3.  **Step 3a: Bi-LSTM Pipeline (Emotion):**
+    *   **Preprocessing:** The text is tokenized and padded using `tokenizer.pkl` to a maximum sequence length of `35` words.
+    *   **Inference:** The padded sequence is fed into **`mood_model.h5`**. The **Bi-LSTM** captures sequential contextual dependencies forward and backward.
+    *   **Output:** The model outputs a GoEmotions class (e.g. `joy`) and computes an overall mood score between 0.0 and 1.0.
+4.  **Step 3b: LDA Pipeline (Topic):**
+    *   **Preprocessing:** Cleans text, removes common English stopwords (e.g. *the, is*), and lemmatizes words to base forms.
+    *   **Inference:** Converts text to a Bag-of-Words (BoW) vector and feeds it to the **LDA** model to find keyword cluster probabilities.
+    *   **Output:** Returns the dominant topic (e.g., `family`).
+5.  **Step 4: Joint Insight Generation:** Merges both outputs using `_generate_combined_insight(emotion, topic)` to output a human-friendly correlated feedback sentence.
+6.  **Step 5: DB Persistence:** Writes the entry text and all AI analysis attributes directly to the PostgreSQL database.
+7.  **Step 6: Dashboard Display:** Returns the payload to Flutter, which renders the emotion badge (e.g., 😊), topic tag (e.g., 🏷️), and updates all analytics charts.
+
+### 💻 Code Implementation:
 ```python
 def analyze(self, text: str) -> Dict[str, Any]:
     # 1. Execute the Bi-LSTM Model to predict the emotion

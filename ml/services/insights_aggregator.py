@@ -31,7 +31,9 @@ class SimpleCache:
             del self._cache[key]
         return None
     
-    def set(self, key: str, value: Any, ttl_seconds: int = 300):
+    def set(self, key: str, value: Any, ttl_seconds: int = 300, ttl: int = None):
+        if ttl is not None:
+            ttl_seconds = ttl
         self._cache[key] = (value, time.time() + ttl_seconds)
     
     def invalidate(self, prefix: str = ""):
